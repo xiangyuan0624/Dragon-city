@@ -1,0 +1,386 @@
+import random
+import tkinter as tk
+from tkinter import simpledialog
+
+# ==========================================
+# GAME CONSTANTS & CONFIGURATION
+# ==========================================
+GRID_SIZE = 10
+CELL_SIZE = 80
+STARTING_ATTACK = 5
+SHIELD_PICKUP_AMOUNT = 20
+TREASURE_GOLD_AMOUNT = 50
+
+# Visual Styles
+COLOR_BG_MAIN = "#2c3e50"
+COLOR_ACCENT_GOLD = "#f1c40f"
+COLOR_OVERLAY_BG = "#0d0000"
+
+TILE_CONFIGS = {
+    "D": {"text": "DRAGON", "bg": "#3498db", "fg": "white"},
+    "T": {"text": "GOLD", "bg": "#f1c40f", "fg": "black"},
+    "P": {"text": "SHIELD", "bg": "#2ecc71", "fg": "white"},
+    "S": {"text": "SAFE\nZONE", "bg": "#9b59b6", "fg": "white"},
+    ".": {"text": "", "bg": "#ecf0f1", "fg": "black"},
+}
+
+
+class DragonCityGame:
+    def __init__(self, root):
+        self.root = root
+        
+        # Player Stats
+        self.player_name = "Hero"
+        self.player_pos = [0, 0]
+        self.player_attack = STARTING_ATTACK
+        self.player_shield = 0
+        self.player_money = 0
+        self.player_level = 1
+
+        # Smooth Stats Display Animation
+        self.animated_attack = self.player_attack
+        self.animated_shield = self.player_shield
+        self.animated_money = self.player_money
+
+        # Engine States
+        self.keys_pressed = set()
+        self.is_animating = False
+        self.is_game_over = False
+
+        # Visual References
+        self.ui_cells = []
+        self.defeat_overlay = None
+
+        # Initialization
+        self.prompt_player_name()
+        self.setup_window()
+        self.grid_map = self.generate_random_map()
+        self.build_ui_grid()
+        self.bind_controls()
+        
+        self.refresh_display()
+
+    # ==========================================
+    # 1. SETUP & INITIALIZATION
+    # ==========================================
+    def prompt_player_name(self):
+        self.root.withdraw()
+        entered_name = simpledialog.askstring("Dragon City", "Enter your Dragon's Name:")
+        if entered_name and entered_name.strip():
+            self.player_name = entered_name.strip()
+        self.root.deiconify()
+
+    def setup_window(self):
+        self.root.title("Dragon City")
+        self.root.geometry("860x960")
+        self.root.configure(bg=COLOR_BG_MAIN)
+
+        self.stats_header = tk.Label(
+            self.root,
+            font=("Helvetica", 14, "bold"),
+            bg=COLOR_BG_MAIN,
+            fg=COLOR_ACCENT_GOLD
+        )
+        self.stats_header.grid(row=0, column=0, columnspan=GRID_SIZE, pady=12)
+
+    def build_ui_grid(self):
+        for row in range(GRID_SIZE):
+            row_cells = []
+            for col in range(GRID_SIZE):
+                cell_frame = tk.Frame(self.root, width=CELL_SIZE, height=CELL_SIZE)
+                cell_frame.grid(row=row + 1, column=col, padx=1, pady=1)
+                cell_frame.pack_propagate(False)
+
+                label = tk.Label(
+                    cell_frame,
+                    borderwidth=2,
+                    relief="raised",
+                    font=("Helvetica", 11, "bold")
+                )
+                label.pack(fill="both", expand=True)
+                row_cells.append(label)
+                
+            self.ui_cells.append(row_cells)
+
+    def bind_controls(self):
+        self.root.bind("<KeyPress>", self.handle_key_press)
+        self.root.bind("<KeyRelease>", self.handle_key_release)
+        self.root.focus_set()
+
+    # ==========================================
+    # 2. MAP GENERATION
+    # ==========================================
+    def generate_random_map(self):
+        grid = [["." for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+
+        # Fixed Spawns
+        grid[0][0] = "D"    # Player Start
+        grid[1][0] = "E5"   # Starter Enemy
+        grid[9][9] = "S"    # Safe Zone Entrance
+
+        # Bosses guarding safe zone
+        boss_positions = [(8, 9), (9, 8)]
+        for row, col in boss_positions:
+            grid[row][col] = "E75"
+
+        # Find empty tiles
+        reserved = {(0, 0), (1, 0), (9, 9)} | set(boss_positions)
+        available_spots = [
+            (row, col) 
+            for row in range(GRID_SIZE) 
+            for col in range(GRID_SIZE) 
+            if (row, col) not in reserved
+        ]
+        random.shuffle(available_spots)
+
+        # Spawning Treasures & Shields
+        for _ in range(5):
+            row, col = available_spots.pop()
+            grid[row][col] = "T"
+
+        for _ in range(4):
+            row, col = available_spots.pop()
+            grid[row][col] = "P"
+
+        # Spawning Progressive Enemies
+        enemy_powers = [10, 15, 20, 25, 30, 35, 40, 50, 60, 70]
+        for power in enemy_powers:
+            if available_spots:
+                row, col = available_spots.pop()
+                grid[row][col] = f"E{power}"
+
+        return grid
+
+    # ==========================================
+    # 3. MOVEMENT & CONTROLS LOGIC
+    # ==========================================
+    def handle_key_press(self, event):
+        key = event.keysym.lower()
+        if key in ['w', 'a', 's', 'd']:
+            self.keys_pressed.add(key)
+            self.process_player_movement()
+
+    def handle_key_release(self, event):
+        key = event.keysym.lower()
+        if key in self.keys_pressed:
+            self.keys_pressed.remove(key)
+
+    def process_player_movement(self):
+        if self.player_attack <= 0 or self.is_game_over:
+            return
+
+        # Movement Offset Calculation
+        delta_row = 0
+        delta_col = 0
+
+        if 'w' in self.keys_pressed: delta_row -= 1
+        if 's' in self.keys_pressed: delta_row += 1
+        if 'a' in self.keys_pressed: delta_col -= 1
+        if 'd' in self.keys_pressed: delta_col += 1
+
+        if delta_row == 0 and delta_col == 0:
+            return
+
+        current_row, current_col = self.player_pos
+        target_row = current_row + delta_row
+        target_col = current_col + delta_col
+
+        # Grid Boundary Check
+        if 0 <= target_row < GRID_SIZE and 0 <= target_col < GRID_SIZE:
+            target_tile = self.grid_map[target_row][target_col]
+            self.resolve_tile_interaction(target_tile)
+
+            # Move Player
+            self.grid_map[current_row][current_col] = "."
+            self.grid_map[target_row][target_col] = "D"
+            self.player_pos = [target_row, target_col]
+
+            self.trigger_animation()
+
+    # ==========================================
+    # 4. GAME INTERACTIONS & COMBAT
+    # ==========================================
+    def resolve_tile_interaction(self, tile):
+        if tile.startswith("E"):
+            enemy_power = int(tile[1:])
+            self.execute_battle(enemy_power)
+
+        elif tile == "T":
+            self.player_money += TREASURE_GOLD_AMOUNT
+
+        elif tile == "P":
+            self.player_shield += SHIELD_PICKUP_AMOUNT
+
+        elif tile == "S":
+            print(f"VICTORY! {self.player_name} reached the safe zone!")
+
+    def execute_battle(self, enemy_power):
+        if self.player_attack >= enemy_power:
+            # Win battle: Absorb enemy power
+            self.player_attack += enemy_power
+            self.player_level += 1
+            if enemy_power == 75:
+                print(f"BOSS DEFEATED! {self.player_name} cleared the path to safety!")
+        else:
+            # Defeat/Damage battle logic
+            damage = enemy_power
+
+            # Shields absorb damage first
+            if self.player_shield > 0:
+                if self.player_shield >= damage:
+                    self.player_shield -= damage
+                    damage = 0
+                else:
+                    damage -= self.player_shield
+                    self.player_shield = 0
+
+            self.player_attack = max(0, self.player_attack - damage)
+
+    # ==========================================
+    # 5. UI DISPLAY & ANIMATION LOOPS
+    # ==========================================
+    def refresh_display(self):
+        self.update_stats_bar()
+        self.update_grid_board()
+
+    def update_stats_bar(self):
+        stats_text = (
+            f"Name: {self.player_name} | Pos: {self.player_pos} | "
+            f"Atk: {self.animated_attack} | Shield: {self.animated_shield} | Gold: {self.animated_money}"
+        )
+        self.stats_header.config(text=stats_text)
+
+    def update_grid_board(self):
+        for row in range(GRID_SIZE):
+            for col in range(GRID_SIZE):
+                tile = self.grid_map[row][col]
+
+                if tile == "D":
+                    short_name = self.player_name[:6].upper()
+                    if self.player_attack <= 0:
+                        text, bg, fg = f"{short_name}\n[DEAD]", "#7f8c8d", "white"
+                    else:
+                        text, bg, fg = f"{short_name}\nATK:{self.animated_attack}", "#3498db", "white"
+
+                elif tile.startswith("E") and len(tile) > 1:
+                    power = tile[1:]
+                    bg = "#8b0000" if power == "75" else "#e74c3c"
+                    label = "BOSS" if power == "75" else "ENEMY"
+                    text, fg = f"{label}\n{power}", "white"
+
+                else:
+                    style = TILE_CONFIGS.get(tile, TILE_CONFIGS["."])
+                    text, bg, fg = style["text"], style["bg"], style["fg"]
+
+                self.ui_cells[row][col].config(text=text, bg=bg, fg=fg)
+
+    def step_animation(self):
+        needs_next_frame = False
+
+        # Transition animated display values smoothly to match real values
+        for real_val, attr_name in [
+            (self.player_attack, "animated_attack"),
+            (self.player_shield, "animated_shield"),
+            (self.player_money, "animated_money")
+        ]:
+            current_val = getattr(self, attr_name)
+            if current_val != real_val:
+                diff = real_val - current_val
+                step = max(1, abs(diff) // 8)
+                setattr(self, attr_name, current_val + (step if diff > 0 else -step))
+                needs_next_frame = True
+
+        self.refresh_display()
+
+        if needs_next_frame:
+            self.root.after(80, self.step_animation)
+        else:
+            self.is_animating = False
+            if self.player_attack <= 0 and not self.is_game_over:
+                self.show_defeat_screen()
+
+    def trigger_animation(self):
+        if not self.is_animating:
+            self.is_animating = True
+            self.step_animation()
+
+    # ==========================================
+    # 6. OVERLAYS & GAME RESET
+    # ==========================================
+    def show_defeat_screen(self):
+        self.is_game_over = True
+
+        self.defeat_overlay = tk.Frame(self.root, bg=COLOR_OVERLAY_BG)
+        self.defeat_overlay.place(relwidth=1.0, relheight=1.0)
+
+        title_label = tk.Label(
+            self.defeat_overlay,
+            text="GAME OVER",
+            font=("Helvetica", 36, "bold"),
+            fg="#ff1900",
+            bg=COLOR_OVERLAY_BG
+        )
+        title_label.pack(pady=(180, 20))
+
+        subtitle_label = tk.Label(
+            self.defeat_overlay,
+            text=f"{self.player_name} was defeated in battle...",
+            font=("Helvetica", 18),
+            fg="#ffffff",
+            bg=COLOR_OVERLAY_BG
+        )
+        subtitle_label.pack(pady=10)
+
+        summary_label = tk.Label(
+            self.defeat_overlay,
+            text=f"Final Level: {self.player_level}  |  Gold Earned: {self.player_money}",
+            font=("Helvetica", 16, "bold"),
+            fg="#ffcc00",
+            bg=COLOR_OVERLAY_BG
+        )
+        summary_label.pack(pady=20)
+
+        restart_btn = tk.Button(
+            self.defeat_overlay,
+            text="TRY AGAIN",
+            font=("Helvetica", 16, "bold"),
+            bg="#c0392b",
+            fg="white",
+            activebackground="#c0392b",
+            activeforeground="white",
+            relief="flat",
+            bd=0,
+            padx=20,
+            pady=10,
+            command=self.restart_game
+        )
+        restart_btn.pack(pady=40)
+
+    def restart_game(self):
+        self.player_pos = [0, 0]
+        self.player_attack = STARTING_ATTACK
+        self.player_shield = 0
+        self.player_money = 0
+        self.player_level = 1
+
+        self.animated_attack = self.player_attack
+        self.animated_shield = self.player_shield
+        self.animated_money = self.player_money
+
+        self.grid_map = self.generate_random_map()
+        self.is_game_over = False
+
+        if self.defeat_overlay:
+            self.defeat_overlay.destroy()
+            self.defeat_overlay = None
+
+        self.refresh_display()
+
+
+# ==========================================
+# MAIN APPLICATION ENTRY POINT
+# ==========================================
+if __name__ == "__main__":
+    root = tk.Tk()
+    game_app = DragonCityGame(root)
+    root.mainloop()
